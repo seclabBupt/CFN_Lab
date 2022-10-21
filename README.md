@@ -4,7 +4,7 @@
 
 ### 1. V1
 
-基于Docker、K3D、OVS、ONOS构建的实验模型。将AS托管于SDN网络。
+基于Docker、K3D、OVS、ONOS构建的实验模型。将AS托管于SDN网络，本质上属于一个二层网络。
 
 ### 2. V2
 
