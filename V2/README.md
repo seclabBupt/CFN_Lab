@@ -117,7 +117,7 @@ ip link set r1-s1 netns r1
 #进入r1
 ifconfig r1-s1 up
 ip addr add 193.10.11.1/24 dev r1-s1
-route add -net 0.0.0.0 gw 193.10.11.1
+//route add -net 0.0.0.0 gw 193.10.11.1（可不配）
 ```
 
 ```bash
@@ -129,7 +129,7 @@ ip link set r2-s2 netns r2
 #进入r2
 ifconfig r2-s2 up
 ip addr add 193.10.12.1/24 dev r2-s2
-route add -net 0.0.0.0 gw 193.10.12.1
+//route add -net 0.0.0.0 gw 193.10.12.1（可不配）
 ```
 
 - 连接onos控制器
