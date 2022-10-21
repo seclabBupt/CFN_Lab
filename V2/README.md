@@ -37,6 +37,9 @@ docker pull kathara/quagga
 ` 教程：https://github.com/KatharaFramework/Kathara-Labs`
 
 ## 2.建立集群与网关连接
+- 整体拓扑结构
+
+![](img/sdn_bgp.png)
 
 - 建立集群与网关
 
@@ -322,4 +325,293 @@ cd /etc/init.d
 ![](img/rspk.png)
 
 ![](img/onos.png)
+## 5.可编程算力网络
 
+- P4拓扑搭建
+
+![](img/p4_topo.png)
+
+```bash
+vim lab.conf
+h1[0]="A"
+h1[image]="kathara/quagga"
+
+h2[0]="C"
+h2[image]="kathara/quagga"
+
+s1[0]="A"
+s1[1]="B"
+s1[image]="kathara/p4"
+
+s2[0]="B"
+s2[1]="C"
+s2[image]="kathara/p4"
+```
+
+```bash
+vim h1.startup
+ip link set eth0 address 00:00:00:00:01:01
+ip addr add 10.0.1.1/24 dev eth0
+ip r add 10.0.2.0/24 dev eth0
+arp -s 10.0.2.2 00:00:0a:00:01:01
+```
+
+```bash
+vim h2.startup
+ip link set eth0 address 00:00:00:00:02:02
+ip addr add 10.0.2.2/24 dev eth0
+ip r add 10.0.1.0/24 dev eth0
+arp -s 10.0.1.1 00:00:0a:00:02:02
+```
+
+```bash
+vim s1.startup
+ip link set eth1 address 00:00:00:01:02:00
+ip link set eth0 address 00:00:0a:00:01:01
+
+p4c /shared/l3_basic_forwarding.p4 -o /
+simple_switch -i 1@eth0 -i 2@eth1 l3_basic_forwarding.json &
+
+while [[ $(pgrep simple_switch) -eq 0 ]]; do sleep 1; done
+until simple_switch_CLI <<< "help"; do sleep 1; done
+
+simple_switch_CLI <<< $(cat commands.txt)
+```
+
+```bash
+vim s2.startup
+ip link set eth1 address 00:00:0a:00:02:02
+ip link set eth0 address 00:00:00:02:01:00
+
+p4c  /shared/l3_basic_forwarding.p4 -o /
+simple_switch -i 1@eth0 -i 2@eth1 l3_basic_forwarding.json &
+
+while [[ $(pgrep simple_switch) -eq 0 ]]; do sleep 1; done
+until simple_switch_CLI <<< "help"; do sleep 1; done
+
+simple_switch_CLI <<< $(cat commands.txt)
+```
+
+```bash
+mkdir s1
+cd s1
+vim commands.txt
+table_set_default ipv4_lpm drop
+table_add ipv4_lpm ipv4_forward 10.0.1.1/32 => 00:00:00:00:01:01 1
+table_add ipv4_lpm ipv4_forward 10.0.2.2/32 => 00:00:00:02:01:00 2
+```
+
+```bash
+mkdir s2
+cd s2
+vim commands.txt
+table_set_default ipv4_lpm drop
+table_add ipv4_lpm ipv4_forward 10.0.1.1/32 => 00:00:00:01:02:00 1
+table_add ipv4_lpm ipv4_forward 10.0.2.2/32 => 00:00:00:00:02:02 2
+```
+
+```bash
+mkdir shared
+cd shared
+vim l3_basic_forwarding.p4
+/* -*- P4_16 -*- */
+#include <core.p4>
+#include <v1model.p4>
+
+const bit<16> TYPE_IPV4 = 0x800;
+
+/*************************************************************************
+*********************** H E A D E R S  ***********************************
+*************************************************************************/
+
+typedef bit<9>  egressSpec_t;
+typedef bit<48> macAddr_t;
+typedef bit<32> ip4Addr_t;
+
+header ethernet_t {
+    macAddr_t dstAddr;
+    macAddr_t srcAddr;
+    bit<16>   etherType;
+}
+
+header ipv4_t {
+    bit<4>    version;
+    bit<4>    ihl;
+    bit<8>    diffserv;
+    bit<16>   totalLen;
+    bit<16>   identification;
+    bit<3>    flags;
+    bit<13>   fragOffset;
+    bit<8>    ttl;
+    bit<8>    protocol;
+    bit<16>   hdrChecksum;
+    ip4Addr_t srcAddr;
+    ip4Addr_t dstAddr;
+}
+
+struct metadata {
+    /* empty */
+}
+
+struct headers {
+    ethernet_t   ethernet;
+    ipv4_t       ipv4;
+}
+
+/*************************************************************************
+*********************** P A R S E R  ***********************************
+*************************************************************************/
+
+parser MyParser(packet_in packet,
+                out headers hdr,
+                inout metadata meta,
+                inout standard_metadata_t standard_metadata) {
+
+    state start {
+
+        packet.extract(hdr.ethernet);
+        transition select(hdr.ethernet.etherType){
+
+            TYPE_IPV4: ipv4;
+            default: accept;
+
+        }
+
+    }
+
+    state ipv4 {
+
+        packet.extract(hdr.ipv4);
+        transition accept;
+    }
+
+}
+
+
+/*************************************************************************
+************   C H E C K S U M    V E R I F I C A T I O N   *************
+*************************************************************************/
+
+control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
+    apply {  }
+}
+
+
+/*************************************************************************
+**************  I N G R E S S   P R O C E S S I N G   *******************
+*************************************************************************/
+
+control MyIngress(inout headers hdr,
+                  inout metadata meta,
+                  inout standard_metadata_t standard_metadata) {
+
+    action drop() {
+        mark_to_drop(standard_metadata);
+    }
+
+    action ipv4_forward(macAddr_t dstAddr, egressSpec_t port) {
+
+        //set the src mac address as the previous dst
+        hdr.ethernet.srcAddr = hdr.ethernet.dstAddr;
+
+       //set the destination mac address that we got from the match in the table
+        hdr.ethernet.dstAddr = dstAddr;
+
+        //set the output port that we also get from the table
+        standard_metadata.egress_spec = port;
+
+        //decrease ttl by 1
+        hdr.ipv4.ttl = hdr.ipv4.ttl -1;
+
+    }
+
+    table ipv4_lpm {
+        key = {
+            hdr.ipv4.dstAddr: lpm;
+        }
+        actions = {
+            ipv4_forward;
+            drop;
+            NoAction;
+        }
+        size = 1024;
+        default_action = NoAction();
+    }
+
+    apply {
+
+        //only if IPV4 the rule is applied. Therefore other packets will not be forwarded.
+        if (hdr.ipv4.isValid()){
+            ipv4_lpm.apply();
+
+        }
+    }
+}
+
+/*************************************************************************
+****************  E G R E S S   P R O C E S S I N G   *******************
+*************************************************************************/
+
+control MyEgress(inout headers hdr,
+                 inout metadata meta,
+                 inout standard_metadata_t standard_metadata) {
+    apply {  }
+}
+
+/*************************************************************************
+*************   C H E C K S U M    C O M P U T A T I O N   **************
+*************************************************************************/
+
+control MyComputeChecksum(inout headers hdr, inout metadata meta) {
+     apply {
+	update_checksum(
+	    hdr.ipv4.isValid(),
+            { hdr.ipv4.version,
+	      hdr.ipv4.ihl,
+              hdr.ipv4.diffserv,
+              hdr.ipv4.totalLen,
+              hdr.ipv4.identification,
+              hdr.ipv4.flags,
+              hdr.ipv4.fragOffset,
+              hdr.ipv4.ttl,
+              hdr.ipv4.protocol,
+              hdr.ipv4.srcAddr,
+              hdr.ipv4.dstAddr },
+            hdr.ipv4.hdrChecksum,
+            HashAlgorithm.csum16);
+    }
+}
+
+
+/*************************************************************************
+***********************  D E P A R S E R  *******************************
+*************************************************************************/
+
+control MyDeparser(packet_out packet, in headers hdr) {
+    apply {
+
+        //parsed headers have to be added again into the packet.
+        packet.emit(hdr.ethernet);
+        packet.emit(hdr.ipv4);
+
+    }
+}
+
+/*************************************************************************
+***********************  S W I T C H  *******************************
+*************************************************************************/
+
+//switch architecture
+V1Switch(
+MyParser(),
+MyVerifyChecksum(),
+MyIngress(),
+MyEgress(),
+MyComputeChecksum(),
+MyDeparser()
+) main;
+```
+
+```bash
+kathara lstart
+```
