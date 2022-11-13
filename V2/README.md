@@ -147,6 +147,13 @@ ovs-vsctl set-controller s2 tcp:172.17.0.4:6653
 app activate org.onosproject.fwd（开启转发）
 ```
 
+- 进入onos的GUI界面
+
+```bash
+sudo docker inspect -f '{{ .NetworkSettings.IPAddress }}' ContainerID （ContainerID为已运行容器的ID号，可以用docker ps查看；此命令输出结果为该容器的IP地址）
+http://localhost:8181/onos/ui/#/settings (localhost为已运行的onos容器的IP地址，用docker inspect查看）
+```
+
 ## 4.配置BGP
 
 - 创建BGP Speaker
